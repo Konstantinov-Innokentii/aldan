@@ -57,20 +57,47 @@ func install(home string, out io.Writer) error {
 	return nil
 }
 
-// addNote appends the agent note, unless the file already has it.
+// The note sits between these markers, so that install can replace and
+// uninstall can remove any version of it.
+const (
+	noteStart = "<!-- aldan:start -->\n"
+	noteEnd   = "<!-- aldan:end -->\n"
+)
+
+// findNote returns where the marked note starts and ends in text.
+func findNote(text []byte) (start, end int, found bool) {
+	start = bytes.Index(text, []byte(noteStart))
+	if start < 0 {
+		return 0, 0, false
+	}
+	length := bytes.Index(text[start:], []byte(noteEnd))
+	if length < 0 {
+		return 0, 0, false
+	}
+	return start, start + length + len(noteEnd), true
+}
+
+// addNote writes the current note: in place of the marked one, or at the end.
 func addNote(path string, out io.Writer) error {
 	old, err := os.ReadFile(path)
 	if err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return err
 	}
-	if bytes.Contains(old, []byte(agentNote)) {
+	block := noteStart + agentNote + noteEnd
+	var updated []byte
+	if start, end, found := findNote(old); found {
+		updated = slices.Concat(old[:start], []byte(block), old[end:])
+	} else {
+		updated = slices.Clone(old)
+		if len(updated) > 0 {
+			updated = append(bytes.TrimRight(updated, "\n"), "\n\n"...)
+		}
+		updated = append(updated, block...)
+	}
+	if bytes.Equal(updated, old) {
 		return nil
 	}
-	updated := slices.Clone(old)
-	if len(updated) > 0 {
-		updated = append(bytes.TrimRight(updated, "\n"), "\n\n"...)
-	}
-	return write(path, old, append(updated, agentNote...), out)
+	return write(path, old, updated, out)
 }
 
 func updateJSON(path string, out io.Writer, change func(map[string]any) (bool, error)) error {
@@ -330,11 +357,14 @@ func removeNote(path string, out io.Writer) error {
 	if err != nil {
 		return err
 	}
-	if !bytes.Contains(old, []byte(agentNote)) {
+	start, end, found := findNote(old)
+	if !found {
 		return nil
 	}
-	updated := bytes.TrimRight(bytes.Replace(old, []byte(agentNote), nil, 1), "\n")
-	if len(updated) > 0 {
+	updated := bytes.TrimRight(old[:start], "\n")
+	if rest := bytes.TrimLeft(old[end:], "\n"); len(rest) > 0 {
+		updated = slices.Concat(updated, []byte("\n\n"), rest)
+	} else if len(updated) > 0 {
 		updated = append(updated, '\n')
 	}
 	return write(path, old, updated, out)

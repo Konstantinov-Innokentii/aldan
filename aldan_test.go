@@ -998,14 +998,35 @@ func TestInstallAddsAgentNote(t *testing.T) {
 	if err := install(home, io.Discard); err != nil {
 		t.Fatal(err)
 	}
-	if got, want := readFile(t, claude), "## Mine\n\nkeep this\n\n"+agentNote; got != want {
+	block := noteStart + agentNote + noteEnd
+	if got, want := readFile(t, claude), "## Mine\n\nkeep this\n\n"+block; got != want {
 		t.Fatalf("CLAUDE.md:\n%s", got)
 	}
 	if got := readFile(t, claude+".bak"); got != "## Mine\n\nkeep this\n" {
 		t.Fatalf(".bak:\n%s", got)
 	}
-	if got := readFile(t, filepath.Join(home, ".codex", "AGENTS.md")); got != agentNote {
+	if got := readFile(t, filepath.Join(home, ".codex", "AGENTS.md")); got != block {
 		t.Fatalf("AGENTS.md:\n%s", got)
+	}
+}
+
+func TestNoteVersionsAreReplacedAndRemoved(t *testing.T) {
+	home := t.TempDir()
+	claude := filepath.Join(home, ".claude", "CLAUDE.md")
+	old := "## Mine\n\n" + noteStart + "an older note\n" + noteEnd + "\n## After\n"
+	writeFile(t, claude, old)
+	if err := install(home, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := readFile(t, claude), "## Mine\n\n"+noteStart+agentNote+noteEnd+"\n## After\n"; got != want {
+		t.Fatalf("after install:\n%s", got)
+	}
+	writeFile(t, claude, old)
+	if err := uninstall(home, filepath.Join(home, "aldan"), io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	if got := readFile(t, claude); got != "## Mine\n\n## After\n" {
+		t.Fatalf("after uninstall:\n%q", got)
 	}
 }
 
