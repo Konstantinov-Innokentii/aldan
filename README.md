@@ -8,7 +8,8 @@
 
 ## Install
 
-Send this page's link to a Claude Code or Codex session and ask it to install aldan.
+> [!TIP]
+> Send this page's link to Claude or Codex and ask it to install aldan.
 
 Requires Go 1.26+.
 
@@ -27,7 +28,12 @@ Requires Go 1.26+.
    aldan install
    ```
 
-   This adds a `Stop` hook that runs `aldan sync` to `~/.claude/settings.json` and `~/.codex/hooks.json`, the `Bash(aldan:*)` permission, and Codex write access to `~/.aldan` in `~/.codex/config.toml`. It also appends a note to `~/.claude/CLAUDE.md` and `~/.codex/AGENTS.md` that tells agents about the index and how to poll for messages. Each changed file keeps a `.bak` copy. If the Codex config already has a `[sandbox_workspace_write]` section, the command stops and says what to add.
+   It changes these files, keeping a `.bak` copy of each:
+
+   - `~/.claude/settings.json`: a `Stop` hook that runs `aldan sync`, and the `Bash(aldan:*)` permission.
+   - `~/.codex/hooks.json`: the same `Stop` hook.
+   - `~/.codex/config.toml`: write access to `~/.aldan`. If the file already has a `[sandbox_workspace_write]` section, the command stops and says what to add.
+   - `~/.claude/CLAUDE.md` and `~/.codex/AGENTS.md`: a note that tells agents about the index and how to poll for messages.
 
 3. Build the index of past sessions:
 
