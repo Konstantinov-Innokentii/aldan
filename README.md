@@ -8,11 +8,15 @@
 
 ## Install
 
-You need Go 1.26 or later, and Claude Code or Codex.
+Send this page's link to a Claude Code or Codex session and ask it to install aldan.
 
-1. Build the binary into a directory on your `PATH`. The hooks and the note call it as `aldan`:
+Requires Go 1.26+.
+
+1. Clone the repo and build the binary into a directory on `PATH`. The hooks and the note call it as `aldan`:
 
    ```bash
+   git clone https://github.com/Konstantinov-Innokentii/aldan.git
+   cd aldan
    mkdir -p ~/.local/bin
    go build -o ~/.local/bin/aldan .
    ```
@@ -23,9 +27,9 @@ You need Go 1.26 or later, and Claude Code or Codex.
    aldan install
    ```
 
-   This adds a `Stop` hook that runs `aldan sync` to `~/.claude/settings.json` and `~/.codex/hooks.json`, the `Bash(aldan:*)` permission, and Codex write access to `~/.aldan` in `~/.codex/config.toml`. It also appends a note to `~/.claude/CLAUDE.md` and `~/.codex/AGENTS.md` that tells agents about the index and how to poll for messages. Each changed file keeps a `.bak` copy. If your Codex config already has a `[sandbox_workspace_write]` section, the command stops and tells you what to add.
+   This adds a `Stop` hook that runs `aldan sync` to `~/.claude/settings.json` and `~/.codex/hooks.json`, the `Bash(aldan:*)` permission, and Codex write access to `~/.aldan` in `~/.codex/config.toml`. It also appends a note to `~/.claude/CLAUDE.md` and `~/.codex/AGENTS.md` that tells agents about the index and how to poll for messages. Each changed file keeps a `.bak` copy. If the Codex config already has a `[sandbox_workspace_write]` section, the command stops and says what to add.
 
-3. Build the index of your past sessions:
+3. Build the index of past sessions:
 
    ```bash
    aldan sync
@@ -33,23 +37,15 @@ You need Go 1.26 or later, and Claude Code or Codex.
 
    This takes about 10 seconds for 10,000 messages.
 
-4. Restart your sessions. Hooks and the note load when a session starts. Codex can ask you to approve the new hook.
+4. Tell the user to restart their sessions, since hooks and the note load when a session starts. Codex can ask them to approve the new hook.
 
-## Check that it works
+5. Tell the user how to check that it works. Open two sessions. In the first, type `I am working on the zebra project. Reply ok.` In the second, type:
 
-```bash
-aldan search "SELECT ts, session_id, text FROM history WHERE text LIKE '%a word from a past session%'"
-```
+   ```
+   Work out 17*23, and notify the session where I worked on the zebra project with the result.
+   ```
 
-You should see matching messages as JSON, with their session ids.
-
-Then open two sessions. In the first, type `I am working on the zebra project. Reply ok.` In the second, type:
-
-```
-Work out 17*23, and notify the session where I worked on the zebra project with the result.
-```
-
-The first session should wake up and report the message.
+   The first session should wake up and report the message.
 
 ## Use
 
@@ -57,25 +53,6 @@ Tell any session what to do in plain words:
 
 - `Run the tests, and tell the session where I worked on the auth refactor when done.`
 - `Ask the session about the Stripe webhook what it found.`
-
-You do not run the commands yourself.
-
-You can also query the index from your terminal, with any read-only SQL:
-
-```bash
-aldan search "SELECT ts, agent, role, session_id, text FROM history WHERE text LIKE '%stripe webhook%' ORDER BY ts"
-```
-
-## Good to know
-
-- **Claude Code** runs its watcher in the background, so you can keep using the session.
-- **Codex** runs its watcher inside its turn. Interrupt it to type. Long waits cost model calls, because Codex keeps checking the running command.
-- **Closed sessions** keep their mail until you resume them.
-- **Scripted runs** (`claude -p`, `codex exec`) can send mail but cannot receive it.
-
-## Data
-
-Everything is in `~/.aldan/aldan.sqlite3`, readable only by you. The index holds your typed prompts and the agents' final answers, which can include secrets.
 
 ## Uninstall
 
