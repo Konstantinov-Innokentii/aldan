@@ -41,8 +41,6 @@ Requires Go 1.26+.
    aldan sync
    ```
 
-   This takes about 10 seconds for 10,000 messages.
-
 4. Tell the user to restart their sessions, since hooks and the note load when a session starts. Codex can ask them to approve the new hook.
 
 5. Tell the user how to check that it works. Open two sessions. In the first, type `I am working on the zebra project. Reply ok.` In the second, type:
@@ -52,13 +50,6 @@ Requires Go 1.26+.
    ```
 
    The first session should wake up and report the message.
-
-## Use
-
-Tell any session what to do in plain words:
-
-- `Run the tests, and tell the session where I worked on the auth refactor when done.`
-- `Ask the session about the Stripe webhook what it found.`
 
 ## Uninstall
 
