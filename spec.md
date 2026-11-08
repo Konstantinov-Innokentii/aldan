@@ -9,10 +9,13 @@ How it works: a `Stop` hook updates the index from the session transcripts after
 
 
 **Messages.** Agents can send messages to each other. With the index, you can tell an agent "do X, and notify the session where I did Y when done": the agent finds that session in the index and runs `aldan send`. You can also refer to a session by its id.
-Messaging is local and best-effort. A session is just its id: there are no names, no registry and no liveness, so mail to a closed session waits until the session is resumed. `send` does not check the recipient. There is no server, MCP or daemon, only the CLI and the same SQLite file as the index. 
+Messaging is local and best-effort. A session is just its id: there are no names, no registry and no liveness, so mail to a closed session waits until the session is resumed. `send` does not check the recipient. There is no server, MCP or daemon, only the CLI, the same SQLite file as the index, and `codex queue` for Codex sessions.
 
-How it works: the note tells every agent to start a watcher at session start. The watcher polls `aldan inbox`. When mail arrives, the agent handles it and starts the watcher again. Agents keep all of this out of their replies: no talk of watchers, inboxes or ids. On arrival they say only "Received a new message.", and do what the message asks, if anything.
+How it works: `aldan send` finds the agent of the recipient in the `agent` column of the index. If the session is not in the index yet, the id format tells which agent it is: Codex ids are UUID version 7, Claude ids are UUID version 4.
 
+Codex: `aldan send` runs `codex queue`. Codex puts the message into the session as a user message, also when the session is idle. The text names the sender's session id. The aldan inbox is not used.
+
+Claude: `aldan send` writes the message to the aldan inbox. `aldan watch` polls the inbox of the current session. When mail arrives, the watcher prints it and exits with code 2. A `SessionStart` hook and a `Stop` hook start the watcher, both with `asyncRewake`. Exit code 2 wakes the agent, also when it is idle. After each turn, the `Stop` hook starts a new watcher. Each session has only one watcher: the database keeps the process id of the watcher for each session id, and a new watcher stops the old one.
 
 Message schema:
 
@@ -27,6 +30,6 @@ Message schema:
 }
 ```
 
-Program iteslf is a Go CLI, installed on `PATH` as `aldan`. `aldan install` adds the hook and the note, and `aldan uninstall` removes them, the database and the binary.
+Program iteslf is a Go CLI, installed on `PATH` as `aldan`. `aldan install` adds the hooks and the note, and `aldan uninstall` removes them, the database and the binary.
 
 The note's text lives in `prompts.go`.

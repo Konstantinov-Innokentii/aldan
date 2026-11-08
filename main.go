@@ -11,14 +11,16 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"time"
 )
 
 const usage = `usage:
   aldan send [--meta JSON] SESSION_ID PROMPT
   aldan inbox        print this session's mail and mark it delivered
+  aldan watch        wait for this session's mail, print it to stderr and exit 2
   aldan search SQL   run read-only SQL against the index
   aldan sync         read new transcripts into the index
-  aldan install      add the Stop hooks, the permission, the Codex sandbox access and the agent note
+  aldan install      add the hooks, the permission, the Codex sandbox access and the agent note
   aldan uninstall    remove what install added, the database and the binary
   aldan help         print this help`
 
@@ -27,11 +29,18 @@ func main() {
 	if err == nil {
 		err = run(os.Args[1:], home, os.Stdout)
 	}
+	if errors.Is(err, errWake) {
+		os.Exit(2)
+	}
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "aldan:", err)
 		os.Exit(1)
 	}
 }
+
+// errWake makes aldan exit with code 2, which wakes a Claude Code session from
+// an asyncRewake hook.
+var errWake = errors.New("mail arrived")
 
 func run(args []string, home string, out io.Writer) error {
 	if len(args) == 0 {
@@ -50,7 +59,7 @@ func run(args []string, home string, out io.Writer) error {
 			return err
 		}
 		return uninstall(home, binary, out)
-	case "send", "inbox", "search", "sync":
+	case "send", "inbox", "watch", "search", "sync":
 	default:
 		return fmt.Errorf("unknown command %q\n%s", command, usage)
 	}
@@ -69,6 +78,8 @@ func run(args []string, home string, out io.Writer) error {
 		return runSend(path, args, out)
 	case "inbox":
 		return runInbox(path, out)
+	case "watch":
+		return runWatch(path, os.Stderr)
 	case "search":
 		return runSearch(path, sources, args, out)
 	}
@@ -132,6 +143,26 @@ func runInbox(path string, out io.Writer) error {
 		return err
 	}
 	return printJSON(out, messages)
+}
+
+func runWatch(path string, out io.Writer) error {
+	self, err := selfID()
+	if err != nil {
+		return err
+	}
+	bus, err := open(path)
+	if err != nil {
+		return err
+	}
+	defer bus.Close()
+	messages, err := bus.watch(self, os.Getpid(), 3*time.Second)
+	if err != nil || messages == nil {
+		return err
+	}
+	if err := printJSON(out, messages); err != nil {
+		return err
+	}
+	return errWake
 }
 
 func runSearch(path string, sources Sources, args []string, out io.Writer) error {

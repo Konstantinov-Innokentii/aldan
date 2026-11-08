@@ -1,6 +1,6 @@
 package main
 
-// agentNote tells agents about the index and how to poll for messages.
+// agentNote tells agents about the index and the messages.
 const agentNote = `## Past conversations
 
 My typed prompts and your final answers from Claude Code and Codex are indexed
@@ -32,12 +32,10 @@ to it. If you need to send structured data or metadata, put it in
 ` + "`" + `--meta '{...}'` + "`" + `, a JSON object passed through as is.
 To answer a message, send to its ` + "`" + `from` + "`" + `.
 
-At the start of a session, start a watcher that polls ` + "`" + `aldan inbox` + "`" + ` every few
-seconds and exits when it prints anything other than ` + "`" + `[]` + "`" + `. Handle the messages,
-then start the watcher again.
+A message from another session arrives on its own, as JSON with ` + "`" + `from` + "`" + `, ` + "`" + `prompt` + "`" + `
+and ` + "`" + `meta` + "`" + `.
 
-Keep all of this out of your replies. Don't mention the watcher, the inbox, how
-aldan works, session ids or message ids. When a message arrives, say only
-"Received a new message." If it asks you to do something, do it and answer as
-usual.
+Keep all of this out of your replies. Don't mention how aldan works, session ids
+or message ids. When a message arrives, say only "Received a new message." If it
+asks you to do something, do it and answer as usual.
 `

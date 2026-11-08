@@ -689,6 +689,117 @@ func TestInbox(t *testing.T) {
 	}
 }
 
+// stubCodex records what send would queue in Codex.
+func stubCodex(t *testing.T) *[][2]string {
+	t.Helper()
+	queued := &[][2]string{}
+	original := codexQueue
+	codexQueue = func(thread, text string) error {
+		*queued = append(*queued, [2]string{thread, text})
+		return nil
+	}
+	t.Cleanup(func() { codexQueue = original })
+	return queued
+}
+
+func TestSendToCodexUsesItsQueue(t *testing.T) {
+	queued := stubCodex(t)
+	bus := newBus(t)
+	if _, err := bus.db.Exec(`INSERT INTO history (id, session_id, role, text, agent) VALUES ('r', 'indexed-codex', 'user', 'hi', 'codex')`); err != nil {
+		t.Fatal(err)
+	}
+	const fresh = "01a1bc30-212b-75b0-b080-cd614c06b0b2"
+	for _, to := range []string{"indexed-codex", fresh} {
+		if _, err := bus.send("me", to, "a <b>", map[string]any{"k": 1}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(*queued) != 2 || (*queued)[0][0] != "indexed-codex" || (*queued)[1][0] != fresh {
+		t.Fatalf("queued = %v", *queued)
+	}
+	if !strings.Contains((*queued)[0][1], "a <b>") {
+		t.Fatalf("text = %s", (*queued)[0][1])
+	}
+	var messages []Message
+	if err := json.Unmarshal([]byte((*queued)[0][1]), &messages); err != nil {
+		t.Fatal(err)
+	}
+	if len(messages) != 1 || messages[0].From != "me" || messages[0].Prompt != "a <b>" || fmt.Sprint(metaOf(t, messages[0])) != "map[k:1]" {
+		t.Fatalf("messages = %+v", messages)
+	}
+	for _, to := range []string{"indexed-codex", fresh} {
+		if mail, _ := bus.inbox(to); len(mail) != 0 {
+			t.Fatalf("inbox of %s = %+v", to, mail)
+		}
+	}
+}
+
+func TestSendToClaudeUsesTheInbox(t *testing.T) {
+	queued := stubCodex(t)
+	bus := newBus(t)
+	const fresh = "97f59767-d747-4b2e-bf45-4d8d78a0e6c4"
+	if _, err := bus.send("me", fresh, "hi", map[string]any{}); err != nil {
+		t.Fatal(err)
+	}
+	if mail, _ := bus.inbox(fresh); len(*queued) != 0 || len(mail) != 1 {
+		t.Fatalf("queued = %v, inbox = %+v", *queued, mail)
+	}
+}
+
+func TestWatchReturnsMail(t *testing.T) {
+	bus := newBus(t)
+	done := make(chan []Message)
+	go func() {
+		messages, err := bus.watch("peer", 1, time.Millisecond)
+		if err != nil {
+			t.Error(err)
+		}
+		done <- messages
+	}()
+	time.Sleep(20 * time.Millisecond)
+	if _, err := bus.send("me", "peer", "hi", map[string]any{}); err != nil {
+		t.Fatal(err)
+	}
+	if messages := <-done; len(messages) != 1 || messages[0].Prompt != "hi" {
+		t.Fatalf("messages = %+v", messages)
+	}
+	var watchers int
+	bus.db.QueryRow(`SELECT count(*) FROM watchers`).Scan(&watchers)
+	if watchers != 0 {
+		t.Fatalf("%d watchers left", watchers)
+	}
+}
+
+func TestNewWatcherReplacesOld(t *testing.T) {
+	bus := newBus(t)
+	old := make(chan []Message)
+	go func() {
+		messages, err := bus.watch("peer", 1, time.Millisecond)
+		if err != nil {
+			t.Error(err)
+		}
+		old <- messages
+	}()
+	time.Sleep(20 * time.Millisecond)
+	fresh := make(chan []Message)
+	go func() {
+		messages, err := bus.watch("peer", 2, time.Millisecond)
+		if err != nil {
+			t.Error(err)
+		}
+		fresh <- messages
+	}()
+	if messages := <-old; messages != nil {
+		t.Fatalf("old watcher got %+v", messages)
+	}
+	if _, err := bus.send("me", "peer", "hi", map[string]any{}); err != nil {
+		t.Fatal(err)
+	}
+	if messages := <-fresh; len(messages) != 1 {
+		t.Fatalf("new watcher got %+v", messages)
+	}
+}
+
 func TestTimestampsSortAsStrings(t *testing.T) {
 	// Trailing zeros must stay: ".1Z" would sort after ".12Z".
 	moment := time.Date(2026, 1, 1, 0, 0, 0, 100000000, time.UTC)
@@ -860,7 +971,8 @@ func TestInstallKeepsExistingSettings(t *testing.T) {
 
 	text := readFile(t, settings)
 	for _, part := range []string{`"model": "opus"`, `12345678901234567890`, `"Bash(ls:*)"`, `"Bash(rm:*)"`,
-		`sync >/dev/null 2>&1`, `"matcher": "startup"`, `"other"`, rule, `"command": "aldan sync >/dev/null"`, `"async": true`} {
+		`sync >/dev/null 2>&1`, `"matcher": "startup"`, `"other"`, rule, `"command": "aldan sync >/dev/null"`, `"async": true`,
+		`"command": "aldan watch"`, `"asyncRewake": true`} {
 		if !strings.Contains(text, part) {
 			t.Fatalf("settings lack %q:\n%s", part, text)
 		}
@@ -886,6 +998,7 @@ func TestInstallTwiceAddsOnce(t *testing.T) {
 		filepath.Join(home, ".claude", "settings.json"),
 		filepath.Join(home, ".codex", "hooks.json"),
 		filepath.Join(home, ".codex", "config.toml"),
+		filepath.Join(home, ".codex", "rules", "aldan.rules"),
 	}
 	before := map[string]string{}
 	for _, path := range paths {
@@ -910,7 +1023,7 @@ func TestInstallTwiceAddsOnce(t *testing.T) {
 		}
 	}
 	claude, codex, toml := before[paths[0]], before[paths[1]], before[paths[2]]
-	if strings.Count(claude, rule) != 1 || strings.Count(claude, syncCommand) != 1 ||
+	if strings.Count(claude, rule) != 1 || strings.Count(claude, syncCommand) != 1 || strings.Count(claude, `"`+watchCommand+`"`) != 2 ||
 		strings.Count(codex, syncCommand) != 1 || strings.Count(toml, filepath.Join(home, ".aldan")) != 1 {
 		t.Fatalf("duplicates:\n%s\n%s\n%s", claude, codex, toml)
 	}
@@ -1074,7 +1187,7 @@ func TestUninstallRemovesWhatInstallAdded(t *testing.T) {
 	if got := readFile(t, filepath.Join(home, ".codex", "AGENTS.md")); got != "" {
 		t.Fatalf("AGENTS.md:\n%s", got)
 	}
-	for _, path := range []string{filepath.Join(home, ".aldan"), binary} {
+	for _, path := range []string{filepath.Join(home, ".aldan"), binary, filepath.Join(home, ".codex", "rules", "aldan.rules")} {
 		if _, err := os.Stat(path); err == nil {
 			t.Fatalf("%s is still there", path)
 		}

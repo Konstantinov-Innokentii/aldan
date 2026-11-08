@@ -30,10 +30,11 @@ Requires Go 1.26+.
 
    It changes these files, keeping a `.bak` copy of each:
 
-   - `~/.claude/settings.json`: a `Stop` hook that runs `aldan sync`, and the `Bash(aldan:*)` permission.
+   - `~/.claude/settings.json`: a `Stop` hook that runs `aldan sync`, a `SessionStart` and a `Stop` hook that run `aldan watch`, and the `Bash(aldan:*)` permission.
    - `~/.codex/hooks.json`: the same `Stop` hook.
+   - `~/.codex/rules/aldan.rules`: a rule that lets `aldan send` run outside the sandbox, so it can hand messages to `codex queue`.
    - `~/.codex/config.toml`: write access to `~/.aldan`. If the file already has a `[sandbox_workspace_write]` section, the command stops and says what to add.
-   - `~/.claude/CLAUDE.md` and `~/.codex/AGENTS.md`: a note that tells agents about the index and how to poll for messages.
+   - `~/.claude/CLAUDE.md` and `~/.codex/AGENTS.md`: a note that tells agents about the index and the messages.
 
 3. Build the index of past sessions:
 
@@ -57,4 +58,4 @@ Requires Go 1.26+.
 aldan uninstall
 ```
 
-This removes the hooks, the permission, the Codex sandbox access, the note, the database in `~/.aldan` and the binary.
+This removes the hooks, the permission, the Codex rule and sandbox access, the note, the database in `~/.aldan` and the binary.

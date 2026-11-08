@@ -11,6 +11,7 @@ import (
 	"io"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"time"
@@ -42,6 +43,11 @@ CREATE TABLE IF NOT EXISTS history (
     agent      TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS history_session ON history(session_id);
+
+CREATE TABLE IF NOT EXISTS watchers (
+    session_id TEXT PRIMARY KEY,
+    pid        INTEGER NOT NULL
+);
 
 CREATE TABLE IF NOT EXISTS files (
     path     TEXT PRIMARY KEY,
@@ -121,22 +127,59 @@ func decodeObject(data []byte) (map[string]any, error) {
 	return object, nil
 }
 
+// send delivers to Codex through its own queue and to Claude through the inbox.
 func (b *Bus) send(from, to, prompt string, meta map[string]any) (string, error) {
 	encoded, err := json.Marshal(meta)
 	if err != nil {
 		return "", err
 	}
-
 	raw := make([]byte, 16)
 	if _, err := rand.Read(raw); err != nil {
 		return "", err
 	}
-	id := hex.EncodeToString(raw)
+	message := Message{ID: hex.EncodeToString(raw), From: from, Prompt: prompt, Meta: encoded, CreatedAt: now()}
+	agent, err := b.agentOf(to)
+	if err != nil {
+		return "", err
+	}
+	if agent == "codex" {
+		var text bytes.Buffer
+		if err := printJSON(&text, []Message{message}); err != nil {
+			return "", err
+		}
+		return message.ID, codexQueue(to, text.String())
+	}
 	_, err = b.db.Exec(
 		`INSERT INTO messages (id, "to", "from", prompt, meta, created_at) VALUES (?, ?, ?, ?, ?, ?)`,
-		id, to, from, prompt, string(encoded), now(),
+		message.ID, to, from, prompt, string(encoded), message.CreatedAt,
 	)
-	return id, err
+	return message.ID, err
+}
+
+// agentOf reads the agent from the index. A session that is not indexed yet is
+// told by its id: Codex ids are UUID version 7, Claude ids version 4.
+func (b *Bus) agentOf(session string) (string, error) {
+	var agent string
+	err := b.db.QueryRow(`SELECT agent FROM history WHERE session_id = ? LIMIT 1`, session).Scan(&agent)
+	if err == nil {
+		return agent, nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return "", err
+	}
+	if len(session) > 14 && session[14] == '7' {
+		return "codex", nil
+	}
+	return "claude", nil
+}
+
+// codexQueue puts text into a Codex session as a user message.
+var codexQueue = func(thread, text string) error {
+	output, err := exec.Command("codex", "queue", "--thread", thread, "--message", text).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("codex queue: %w: %s", err, bytes.TrimSpace(output))
+	}
+	return nil
 }
 
 // inbox is one UPDATE, so two readers cannot get the same message.
@@ -164,4 +207,32 @@ func (b *Bus) inbox(session string) ([]Message, error) {
 	}
 	sort.SliceStable(messages, func(i, j int) bool { return messages[i].CreatedAt < messages[j].CreatedAt })
 	return messages, nil
+}
+
+// watch polls the inbox of session until mail arrives, and returns it. A newer
+// watcher of the same session replaces this one, and then watch returns nil.
+func (b *Bus) watch(session string, pid int, interval time.Duration) ([]Message, error) {
+	_, err := b.db.Exec(`INSERT INTO watchers (session_id, pid) VALUES (?, ?)
+        ON CONFLICT (session_id) DO UPDATE SET pid = excluded.pid`, session, pid)
+	if err != nil {
+		return nil, err
+	}
+	for {
+		var current int
+		if err := b.db.QueryRow(`SELECT pid FROM watchers WHERE session_id = ?`, session).Scan(&current); err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return nil, err
+		}
+		if current != pid {
+			return nil, nil
+		}
+		messages, err := b.inbox(session)
+		if err != nil {
+			return nil, err
+		}
+		if len(messages) > 0 {
+			_, err := b.db.Exec(`DELETE FROM watchers WHERE session_id = ? AND pid = ?`, session, pid)
+			return messages, err
+		}
+		time.Sleep(interval)
+	}
 }

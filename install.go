@@ -30,23 +30,33 @@ func install(home string, out io.Writer) error {
 	}
 	// One update per file, so that the .bak holds the contents from before install.
 	err := updateJSON(filepath.Join(home, ".claude", "settings.json"), out, func(settings map[string]any) (bool, error) {
-		hooked, err := addHook(settings, map[string]any{"type": "command", "command": syncCommand, "timeout": 60, "async": true})
+		changed, err := addHook(settings, "Stop", map[string]any{"type": "command", "command": syncCommand, "timeout": 60, "async": true})
 		if err != nil {
 			return false, err
 		}
+		for _, event := range []string{"SessionStart", "Stop"} {
+			added, err := addHook(settings, event, watchHook())
+			if err != nil {
+				return false, err
+			}
+			changed = changed || added
+		}
 		allowed, err := addPermission(settings, "Bash(aldan:*)")
-		return hooked || allowed, err
+		return changed || allowed, err
 	})
 	if err != nil {
 		return err
 	}
 	err = updateJSON(filepath.Join(home, ".codex", "hooks.json"), out, func(settings map[string]any) (bool, error) {
-		return addHook(settings, map[string]any{"type": "command", "command": syncCommand, "timeout": 60})
+		return addHook(settings, "Stop", map[string]any{"type": "command", "command": syncCommand, "timeout": 60})
 	})
 	if err != nil {
 		return err
 	}
 	if err := addWritableRoot(filepath.Join(home, ".codex", "config.toml"), data, out); err != nil {
+		return err
+	}
+	if err := addCodexRule(filepath.Join(home, ".codex", "rules", "aldan.rules"), out); err != nil {
 		return err
 	}
 	for _, path := range []string{filepath.Join(home, ".claude", "CLAUDE.md"), filepath.Join(home, ".codex", "AGENTS.md")} {
@@ -159,13 +169,21 @@ func list(parent map[string]any, key string) ([]any, error) {
 // syncCommand keeps the index fresh after every turn.
 const syncCommand = "aldan sync >/dev/null"
 
-// addHook adds a Stop hook, unless one with the same command is there.
-func addHook(settings map[string]any, hook map[string]any) (bool, error) {
+// watchCommand waits for mail in a Claude Code session. Claude Code kills a hook
+// at its timeout, so the timeout is a year.
+const watchCommand = "aldan watch"
+
+func watchHook() map[string]any {
+	return map[string]any{"type": "command", "command": watchCommand, "asyncRewake": true, "timeout": 365 * 24 * 60 * 60}
+}
+
+// addHook adds a hook for event, unless one with the same command is there.
+func addHook(settings map[string]any, event string, hook map[string]any) (bool, error) {
 	hooks, err := child(settings, "hooks")
 	if err != nil {
 		return false, err
 	}
-	stops, err := list(hooks, "Stop")
+	stops, err := list(hooks, event)
 	if err != nil {
 		return false, err
 	}
@@ -178,7 +196,7 @@ func addHook(settings map[string]any, hook map[string]any) (bool, error) {
 			}
 		}
 	}
-	hooks["Stop"] = append(stops, map[string]any{"hooks": []any{hook}})
+	hooks[event] = append(stops, map[string]any{"hooks": []any{hook}})
 	return true, nil
 }
 
@@ -214,6 +232,21 @@ func addWritableRoot(path, root string, out io.Writer) error {
 	return write(path, old, append(slices.Clone(old), rootSection(root)...), out)
 }
 
+// codexRule lets aldan send run outside the Codex sandbox, where codex queue
+// can reach the Codex app server.
+const codexRule = `prefix_rule(pattern=["aldan", "send"], decision="allow")` + "\n"
+
+func addCodexRule(path string, out io.Writer) error {
+	old, err := os.ReadFile(path)
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+	if string(old) == codexRule {
+		return nil
+	}
+	return write(path, old, []byte(codexRule), out)
+}
+
 func rootSection(root string) string {
 	return fmt.Sprintf("\n[sandbox_workspace_write]\nwritable_roots = [%s]\n", strconv.Quote(root))
 }
@@ -238,7 +271,12 @@ func write(path string, old, updated []byte, out io.Writer) error {
 // uninstall removes what install added, the data directory and the binary.
 func uninstall(home, binary string, out io.Writer) error {
 	err := updateJSON(filepath.Join(home, ".claude", "settings.json"), out, func(settings map[string]any) (bool, error) {
-		unhooked := removeHook(settings)
+		unhooked := false
+		for _, hook := range []struct{ event, command string }{{"Stop", syncCommand}, {"SessionStart", watchCommand}, {"Stop", watchCommand}} {
+			if removeHook(settings, hook.event, hook.command) {
+				unhooked = true
+			}
+		}
 		disallowed := removePermission(settings, "Bash(aldan:*)")
 		return unhooked || disallowed, nil
 	})
@@ -246,9 +284,15 @@ func uninstall(home, binary string, out io.Writer) error {
 		return err
 	}
 	err = updateJSON(filepath.Join(home, ".codex", "hooks.json"), out, func(settings map[string]any) (bool, error) {
-		return removeHook(settings), nil
+		return removeHook(settings, "Stop", syncCommand), nil
 	})
 	if err != nil {
+		return err
+	}
+	rules := filepath.Join(home, ".codex", "rules", "aldan.rules")
+	if err := os.Remove(rules); err == nil {
+		fmt.Fprintln(out, "removed", rules)
+	} else if !errors.Is(err, fs.ErrNotExist) {
 		return err
 	}
 	data := filepath.Join(home, ".aldan")
@@ -271,10 +315,10 @@ func uninstall(home, binary string, out io.Writer) error {
 	return nil
 }
 
-// removeHook drops the aldan Stop hook, and any group or list left empty.
-func removeHook(settings map[string]any) bool {
+// removeHook drops the hook with command from event, and any group or list left empty.
+func removeHook(settings map[string]any, event, command string) bool {
 	hooks, _ := settings["hooks"].(map[string]any)
-	stops, _ := hooks["Stop"].([]any)
+	stops, _ := hooks[event].([]any)
 	removed := false
 	var kept []any
 	for _, stop := range stops {
@@ -282,7 +326,7 @@ func removeHook(settings map[string]any) bool {
 		entries, _ := group["hooks"].([]any)
 		var left []any
 		for _, entry := range entries {
-			if hook, _ := entry.(map[string]any); hook["command"] == syncCommand {
+			if hook, _ := entry.(map[string]any); hook["command"] == command {
 				removed = true
 				continue
 			}
@@ -300,9 +344,9 @@ func removeHook(settings map[string]any) bool {
 		return false
 	}
 	if len(kept) == 0 {
-		delete(hooks, "Stop")
+		delete(hooks, event)
 	} else {
-		hooks["Stop"] = kept
+		hooks[event] = kept
 	}
 	if len(hooks) == 0 {
 		delete(settings, "hooks")
